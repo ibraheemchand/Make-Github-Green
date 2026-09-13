@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="makeGithubgreen — configure a commit pattern and generate a backfill script that paints your GitHub contribution graph green.">
+<title>makeGithubgreen — paint your GitHub contribution graph</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <div class="logo">makeGithub<em>green</em></div>
+    <p class="tagline">Backdate commits &amp; paint your contribution graph. Pick your rhythm — every day, a few days a week, random days, random messages — copy the generated script, run it in your repo, push. Green squares.</p>
+  </div>
+</header>
+
+<main class="wrap layout">
+
+  <section class="col-options">
+
+    <div class="card">
+      <h2><i>1</i> Date range</h2>
+      <div class="row two">
+        <label class="field">Start date
+          <input type="date" id="startDate" value="2026-01-01">
+        </label>
+        <label class="field">End date
+          <input type="date" id="endDate" value="2026-07-30">
+        </label>
+      </div>
+      <p class="hint error" id="dateError"></p>
+    </div>
+
+    <div class="card">
+      <h2><i>2</i> How many times per week?</h2>
+      <output class="freq-label" id="freqLabel">5 days per week — like a normal work week</output>
+      <input type="range" id="freqSlider" min="1" max="7" value="5">
+      <div class="chips" id="dayChips">
+        <button type="button" class="chip on" data-dow="1">Mon</button>
+        <button type="button" class="chip on" data-dow="2">Tue</button>
+        <button type="button" class="chip on" data-dow="3">Wed</button>
+        <button type="button" class="chip on" data-dow="4">Thu</button>
+        <button type="button" class="chip on" data-dow="5">Fri</button>
+        <button type="button" class="chip" data-dow="6">Sat</button>
+        <button type="button" class="chip" data-dow="0">Sun</button>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="randomDays">
+        <span class="track"></span>
+        <span class="lbl">Random days — shuffle <strong>which</strong> weekdays get commits, every week</span>
+      </label>
+      <p class="hint">With 7/7 the graph goes fully green. With 2–3/week it looks like a naturally active human. Leave a minimum of one day selected.</p>
+    </div>
+
+    <div class="card">
+      <h2><i>3</i> Randomness</h2>
+      <div class="switch-row">
+        <label class="switch">
+          <input type="checkbox" id="randomCount">
+          <span class="track"></span>
+          <span class="lbl">Random number of commits per active day</span>
+        </label>
+        <span class="mini-note" id="maxPerDayWrap">max
+          <select id="maxPerDay">
+            <option value="2">2</option>
+            <option value="3" selected>3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+          / day
+        </span>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="randomMsgs">
+        <span class="track"></span>
+        <span class="lbl">Random commit messages (pick from the pool)</span>
+      </label>
+      <label class="field">Message pool (one message per line)
+        <textarea id="msgPool" rows="7" spellcheck="false"></textarea>
+      </label>
+    </div>
+
+    <div class="card">
+      <h2><i>4</i> Repo details</h2>
+      <div class="row two">
+        <label class="field">Activity file
+          <input type="text" id="logFile" value="activity_log.txt">
+        </label>
+        <label class="field">Branch
+          <input type="text" id="branch" value="main">
+        </label>
+      </div>
+      <div class="row two">
+        <label class="field">Git user.name <small>(optional)</small>
+          <input type="text" id="userName" placeholder="keep current config" autocomplete="off">
+        </label>
+        <label class="field">Git user.email <small>(optional)</small>
+          <input type="text" id="userEmail" placeholder="must exist on your GitHub account" autocomplete="off">
+        </label>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="autoPush">
+        <span class="track"></span>
+        <span class="lbl">Push automatically when finished</span>
+      </label>
+    </div>
+
+    <button type="button" id="generateBtn" class="btn primary big">Generate script</button>
+
+  </section>
+
+  <section class="col-output">
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Graph preview</h2>
+        <button type="button" id="rerollBtn" class="btn ghost small" title="Reshuffle the random pattern">Re-shuffle</button>
+      </div>
+      <div class="graph">
+        <div class="graph-months" id="graphMonths"></div>
+        <div class="graph-row">
+          <div class="graph-days">
+            <span style="grid-row:2">Mon</span>
+            <span style="grid-row:4">Wed</span>
+            <span style="grid-row:6">Fri</span>
+          </div>
+          <div class="graph-grid" id="graphGrid"></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span>Less</span>
+        <i class="lv0"></i><i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i>
+        <span>More</span>
+      </div>
+      <p class="stats" id="stats"></p>
+    </div>
+
+    <div class="card" id="scriptCard">
+      <div class="card-head">
+        <h2>Your script — <code>makeGithubgreen.sh</code></h2>
+        <div class="btn-group">
+          <button type="button" id="copyBtn" class="btn ghost small">Copy</button>
+          <button type="button" id="downloadBtn" class="btn ghost small">Download</button>
+        </div>
+      </div>
+      <pre id="scriptOut"><code id="scriptCode"></code></pre>
+      <p class="hint">Save it inside your repository, then run: <code>bash makeGithubgreen.sh</code> — afterwards <code>git push origin main</code> (or enable auto-push above).</p>
+    </div>
+
+    <div class="card notes">
+      <h2>Make sure it actually turns green</h2>
+      <ul>
+        <li>Run the script <strong>inside an existing git repo</strong> — <code>git init</code> plus a remote (<code>git remote add origin &lt;url&gt;</code>).</li>
+        <li>The commit email must be added to your GitHub account: Settings → Emails.</li>
+        <li>Commits must land on the <strong>default branch</strong> and must be <strong>pushed</strong> — local commits alone don't count.</li>
+        <li>The repo must be public, or enable “include private contributions” on your profile.</li>
+        <li>The script needs GNU <code>date</code> (Linux, WSL, Git Bash on Windows). On macOS: <code>brew install coreutils</code> and use <code>gdate</code>.</li>
+      </ul>
+    </div>
+
+  </section>
+
+</main>
+
+<footer class="wrap site-foot">
+  makeGithubgreen · scripts run 100% locally in your terminal · backdated commits are visible to anyone reading the repo history, so use it sensibly.
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
