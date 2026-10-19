@@ -12,10 +12,18 @@ const DEFAULT_MSGS = [
   'chore: routine maintenance',
   'fix: correct typo',
   'chore: sync changes',
-  'update: refine details'
+  'feat: small improvement',
+  'fix: guard against empty input',
+  'docs: clarify setup steps',
+  'refactor: simplify helper'
 ];
 
 const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PRESET_KEY = 'mgg-preset';
+const PRESET_FIELDS = [
+  'startDate', 'endDate', 'freqSlider', 'randomDays', 'randomCount', 'minPerDay',
+  'maxPerDay', 'randomMsgs', 'msgPool', 'logFile', 'branch', 'userName', 'userEmail', 'autoPush'
+];
 const CHIP_ORDER = [1, 2, 3, 4, 5, 6, 0];
 const FREQ_DESC = [
   'barely active',
@@ -27,6 +35,298 @@ const FREQ_DESC = [
   'every single day — full green'
 ];
 const MAX_PREVIEW_COLS = 53;
+
+// Everything below the configuration block of green.py, kept in sync with that file.
+const PY_BODY = String.raw`# ==================== END OF CONFIGURATION ====================
+
+import argparse
+import datetime
+import os
+import random
+import shutil
+import subprocess
+import sys
+
+WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+class GreenError(Exception):
+    """A user-facing error, printed without a traceback."""
+
+
+# --------------------------- parsing ---------------------------
+
+def parse_date(value, label):
+    try:
+        return datetime.datetime.strptime(str(value).strip(), "%Y-%m-%d").date()
+    except ValueError:
+        raise GreenError(f"Invalid {label} date {value!r} -- expected YYYY-MM-DD, e.g. 2026-01-31.")
+
+
+def parse_days(value):
+    """Return a set of weekday numbers (Mon=0 .. Sun=6), or None for random days."""
+    text = str(value or "").strip().lower()
+    if text == "random":
+        return None
+    days = set()
+    for part in text.replace(" ", "").split(","):
+        if not part:
+            continue
+        key = part[:3]
+        if key not in WEEKDAYS:
+            raise GreenError(f"Unknown weekday {part!r} -- use mon,tue,wed,thu,fri,sat,sun or 'random'.")
+        days.add(WEEKDAYS.index(key))
+    if not days:
+        raise GreenError("--days needs at least one weekday, e.g. mon,wed,fri (or 'random').")
+    return days
+
+
+def parse_commits(value):
+    """Return (low, high) commits per active day."""
+    text = str(value).strip()
+    try:
+        if "-" in text:
+            low, high = (int(x) for x in text.split("-", 1))
+        else:
+            low = high = int(text)
+    except ValueError:
+        raise GreenError(f"Invalid --commits {value!r} -- use a number like 3 or a range like 1-5.")
+    if low < 1 or high < low:
+        raise GreenError(f"Invalid --commits {value!r} -- numbers must be >= 1 and min <= max.")
+    return low, high
+
+
+def load_messages(path):
+    if not path:
+        return list(MESSAGES)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            messages = [line.strip() for line in fh if line.strip()]
+    except OSError as exc:
+        raise GreenError(f"Could not read messages file {path!r}: {exc.strerror or exc}")
+    if not messages:
+        print(f"warning: {path} is empty -- using the built-in messages.")
+        return list(MESSAGES)
+    return messages
+
+
+# ----------------------------- git -----------------------------
+
+def git(*args, env=None, check=True):
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        raise GreenError(f"Could not run git: {exc}")
+    if check and result.returncode != 0:
+        output = (result.stderr or result.stdout).strip()
+        raise GreenError(f"'git {' '.join(args)}' failed:\n{output}")
+    return result
+
+
+def check_git():
+    if shutil.which("git") is None:
+        raise GreenError(
+            "git was not found on your PATH.\n"
+            "Install it from https://git-scm.com/downloads, then open a new terminal and try again."
+        )
+    inside = git("rev-parse", "--is-inside-work-tree", check=False)
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        raise GreenError(
+            "This folder is not a git repository.\n"
+            "Run 'git init' and 'git remote add origin <url>' first, or cd into your repo."
+        )
+
+
+def ensure_branch(branch):
+    current = git("symbolic-ref", "--quiet", "--short", "HEAD", check=False).stdout.strip()
+    if current == branch:
+        return
+    has_commits = git("rev-parse", "--verify", "--quiet", "HEAD", check=False).returncode == 0
+    if not has_commits:
+        # Fresh repo with no commits yet: just point HEAD at the target branch.
+        git("symbolic-ref", "HEAD", "refs/heads/" + branch)
+    elif git("rev-parse", "--verify", "--quiet", "refs/heads/" + branch, check=False).returncode == 0:
+        git("checkout", "--quiet", branch)
+    else:
+        git("checkout", "--quiet", "-b", branch)
+    print(f"Switched to branch '{branch}'.")
+
+
+def make_commit(day, index, message, log_file):
+    stamp = datetime.datetime.combine(
+        day, datetime.time(random.randint(9, 20), random.randint(0, 59), random.randint(0, 59))
+    ).strftime("%Y-%m-%dT%H:%M:%S")
+    with open(log_file, "a", encoding="utf-8") as fh:
+        fh.write(f"[{day.isoformat()}] entry #{index} - {message}\n")
+    git("add", "--", log_file)
+    env = dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
+    git("commit", "--quiet", "--no-verify", "-m", message, env=env)
+
+
+# --------------------------- planning --------------------------
+
+def build_plan(start, end, fixed_days, per_week, low, high):
+    """Return one date per commit, in chronological order."""
+    plan = []
+    week = None
+    selected = set()
+    day = start
+    one_day = datetime.timedelta(days=1)
+    while day <= end:
+        iso_week = day.isocalendar()[:2]
+        if iso_week != week:
+            week = iso_week
+            selected = fixed_days if fixed_days is not None else set(random.sample(range(7), per_week))
+        if day.weekday() in selected:
+            plan.extend([day] * random.randint(low, high))
+        day += one_day
+    return plan
+
+
+# ----------------------------- ui ------------------------------
+
+def bar_chars():
+    encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+    try:
+        "█░".encode(encoding)
+        return "█", "░"
+    except (LookupError, UnicodeEncodeError):
+        return "#", "-"
+
+
+def print_progress(done, total, chars, width=30):
+    full, empty = chars
+    ratio = done / total if total else 1.0
+    filled = int(round(width * ratio))
+    bar = full * filled + empty * (width - filled)
+    sys.stdout.write(f"\r[{bar}] {int(ratio * 100):3d}% {done}/{total} commits")
+    sys.stdout.flush()
+
+
+def ask(prompt, default):
+    try:
+        answer = input(f"{prompt} [{default}]: ").strip()
+    except EOFError:
+        answer = ""
+    return answer or str(default)
+
+
+def ask_yes_no(prompt, default):
+    answer = ask(prompt, "Y/n" if default else "y/N").lower()
+    if answer == "y/n":  # Enter pressed: keep the default
+        return default
+    return answer.startswith("y")
+
+
+def interactive(args):
+    print("makeGithubgreen -- press Enter to keep the value in [brackets].\n")
+    args.start = ask("Start date (YYYY-MM-DD)", args.start)
+    args.end = ask("End date (YYYY-MM-DD)", args.end)
+    args.days = ask("Weekdays (e.g. mon,wed,fri) or 'random'", args.days)
+    args.commits = ask("Commits per day (e.g. 3 or 1-5)", args.commits)
+    args.branch = ask("Branch", args.branch)
+    args.name = ask("git user.name (blank = keep current)", args.name or "")
+    args.email = ask("git user.email (blank = keep current)", args.email or "")
+    args.messages = ask("Messages file (blank = built-in)", args.messages or "")
+    args.push = ask_yes_no("Push when done?", args.push)
+    print()
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Backdate commits to paint your GitHub contribution graph green.",
+        epilog="Run inside your git repository. Python 3.6+, no extra packages needed.",
+    )
+    parser.add_argument("--start", default=START_DATE, help="start date, YYYY-MM-DD")
+    parser.add_argument("--end", default=END_DATE, help="end date, YYYY-MM-DD")
+    parser.add_argument("--days", default=DAYS, help="weekdays to commit, e.g. mon,wed,fri -- or 'random'")
+    parser.add_argument("--commits", default=COMMITS, help="commits per active day, e.g. 3 -- or a range like 1-5")
+    parser.add_argument("--branch", default=BRANCH, help="target branch (default: " + BRANCH + ")")
+    parser.add_argument("--push", action="store_true", default=AUTO_PUSH, help="git push when finished")
+    parser.add_argument("--name", default=GIT_NAME, help="override git user.name for this repo")
+    parser.add_argument("--email", default=GIT_EMAIL, help="override git user.email for this repo")
+    parser.add_argument("--messages", default=MESSAGES_FILE, metavar="FILE",
+                        help="text file with one commit message per line")
+    parser.add_argument("--interactive", action="store_true", help="prompt for every setting")
+    return parser.parse_args(argv)
+
+
+# ----------------------------- main ----------------------------
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    args = parse_args(argv)
+    if args.interactive or (not argv and INTERACTIVE_IF_NO_ARGS):
+        interactive(args)
+
+    start = parse_date(args.start, "start")
+    end = parse_date(args.end, "end")
+    if start > end:
+        raise GreenError(f"Start date {start} is after end date {end}.")
+    fixed_days = parse_days(args.days)
+    low, high = parse_commits(args.commits)
+    per_week = max(1, min(7, int(DAYS_PER_WEEK)))
+    messages = load_messages(args.messages) if (args.messages or RANDOM_MESSAGES) else None
+
+    check_git()
+    if args.name:
+        git("config", "user.name", args.name)
+    if args.email:
+        git("config", "user.email", args.email)
+    ensure_branch(args.branch)
+
+    plan = build_plan(start, end, fixed_days, per_week, low, high)
+    total = len(plan)
+    if not total:
+        print("Nothing to do -- no commit days fall inside that date range.")
+        return 0
+
+    print(f"Creating {total} backdated commit(s) from {start} to {end} on '{args.branch}'...")
+    chars = bar_chars()
+    print_progress(0, total, chars)
+    for index, day in enumerate(plan, 1):
+        if messages:
+            message = random.choice(messages)
+        else:
+            message = f"chore({day.isoformat()}): update {LOG_FILE} (entry #{index})"
+        make_commit(day, index, message, LOG_FILE)
+        print_progress(index, total, chars)
+    print()
+    print(f"Done. {total} commit(s) across {len(set(plan))} active day(s).")
+
+    if args.push:
+        print(f"Pushing to origin/{args.branch}...")
+        try:
+            code = subprocess.call(["git", "push", "-u", "origin", args.branch])
+        except OSError as exc:
+            raise GreenError(f"Could not run git push: {exc}")
+        if code != 0:
+            raise GreenError(f"git push failed (exit code {code}). Check your remote and credentials, then run:\n"
+                             f"  git push -u origin {args.branch}")
+        print("Pushed. Squares should turn green within a few minutes.")
+    else:
+        print("Squares turn green after pushing:")
+        print(f"  git push -u origin {args.branch}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except GreenError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nInterrupted -- commits created so far are kept.", file=sys.stderr)
+        sys.exit(130)
+`;
 
 const state = {
   seed: (Math.random() * 2147483647) | 0,
@@ -70,12 +370,17 @@ function pickRandomDays(rng, n) {
   return set;
 }
 
-function shEsc(s) {
-  return String(s)
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/`/g, '\\`')
-    .replace(/\$/g, '\\$');
+function pyStr(s) {
+  return JSON.stringify(String(s));
+}
+
+function pyBool(b) {
+  return b ? 'True' : 'False';
+}
+
+function clampInt(v, lo, hi, fallback) {
+  const n = parseInt(v, 10);
+  return isNaN(n) ? fallback : Math.max(lo, Math.min(hi, n));
 }
 
 function readConfig() {
@@ -87,7 +392,8 @@ function readConfig() {
       .map(c => parseInt(c.dataset.dow, 10)),
     randomDays: $('randomDays').checked,
     randomCommits: $('randomCount').checked,
-    maxPerDay: parseInt($('maxPerDay').value, 10),
+    minPerDay: clampInt($('minPerDay').value, 1, 50, 1),
+    maxPerDay: Math.max(clampInt($('minPerDay').value, 1, 50, 1), clampInt($('maxPerDay').value, 1, 50, 5)),
     randomMsgs: $('randomMsgs').checked,
     messages: $('msgPool').value.split('\n').map(s => s.trim()).filter(Boolean),
     logFile: $('logFile').value.trim() || 'activity_log.txt',
@@ -144,7 +450,7 @@ function renderPreview(cfg) {
     }
     if (d >= start && selected.has(d.getDay())) {
       const count = cfg.randomCommits
-        ? 1 + Math.floor(rng() * Math.max(1, cfg.maxPerDay))
+        ? cfg.minPerDay + Math.floor(rng() * (cfg.maxPerDay - cfg.minPerDay + 1))
         : 1;
       activeDays += 1;
       totalCommits += count;
@@ -165,7 +471,7 @@ function renderPreview(cfg) {
     el.className = 'cell lv' + level;
     if (c.inRange) {
       el.title = (c.count > 0
-        ? count + ' commit' + (count > 1 ? 's' : '')
+        ? c.count + ' commit' + (c.count > 1 ? 's' : '')
         : 'No commits') + ' · ' + fmtDate(c.date);
     }
     grid.appendChild(el);
@@ -195,212 +501,103 @@ function renderPreview(cfg) {
 
 function generateScript(cfg, stats) {
   const today = new Date().toISOString().slice(0, 10);
+  const weekdays = (cfg.weekdays.length ? cfg.weekdays : [1])
+    .slice()
+    .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7));
+  const days = cfg.randomDays
+    ? 'random'
+    : weekdays.map(x => DOW_NAMES[x].toLowerCase()).join(',');
+  const commits = cfg.randomCommits
+    ? (cfg.minPerDay === cfg.maxPerDay ? String(cfg.minPerDay) : cfg.minPerDay + '-' + cfg.maxPerDay)
+    : '1';
   const daysMode = cfg.randomDays
     ? 'random ' + cfg.perWeek + ' weekday(s) each week'
-    : 'fixed days: ' + (cfg.weekdays.length ? cfg.weekdays : [1])
-        .slice()
-        .sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7))
-        .map(x => DOW_NAMES[x])
-        .join(', ');
+    : 'fixed days: ' + weekdays.map(x => DOW_NAMES[x]).join(', ');
   const countMode = cfg.randomCommits
-    ? 'random 1..' + cfg.maxPerDay + ' commit(s) per active day'
+    ? 'random ' + cfg.minPerDay + '..' + cfg.maxPerDay + ' commit(s) per active day'
     : 'exactly 1 commit per active day';
   const msgMode = cfg.randomMsgs ? 'random messages from pool' : 'conventional messages';
-  const fixedDays = (cfg.weekdays.length ? cfg.weekdays : [1]).join(' ');
   const pool = (cfg.messages.length ? cfg.messages : DEFAULT_MSGS)
-    .map(shEsc)
+    .map(m => '    ' + pyStr(m) + ',')
     .join('\n');
 
-  return `#!/usr/bin/env bash
-#
+  return `#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+makeGithubgreen.py -- auto-generated by makeGithubgreen
+  Generated : ${today}
+  Range     : ${cfg.start} -> ${cfg.end}
+  Pattern   : ${cfg.perWeek} commit day(s) / week | ${daysMode}
+              ${countMode} | ${msgMode}
+  Estimate  : ~${stats.totalCommits} commit(s) across ~${stats.activeDays} active day(s)
+
+HOW TO USE
+  1. Place this file inside your git repository (with a remote configured).
+  2. Run:  python makeGithubgreen.py      (python3 on some Mac/Linux systems)
+  3. Push: git push origin ${cfg.branch}   (or set AUTO_PUSH = True below)
+
+Every setting below can also be overridden with a flag, e.g.
+  python makeGithubgreen.py --start 2026-01-01 --days mon,wed,fri --commits 1-3 --push
+Run with --help for all options. Works on Windows, macOS and Linux (Python 3.6+).
+
+WHY SQUARES TURN GREEN ON GITHUB
+  * Commit email must be one of the emails on your GitHub account.
+  * Commits must reach the default branch and be pushed.
+  * Repo public (or private contributions enabled in settings).
+"""
+
 # ============================================================
-#  makeGithubgreen.sh  --  auto-generated by makeGithubgreen
-#  Generated : ${today}
-#  Range     : ${cfg.start} -> ${cfg.end}
-#  Pattern   : ${cfg.perWeek} commit day(s) / week | ${daysMode}
-#              ${countMode} | ${msgMode}
-#  Estimate  : ~${stats.totalCommits} commit(s) across ~${stats.activeDays} active day(s)
+#  CONFIGURATION -- defaults used when a flag is not given
 # ============================================================
-#
-# HOW TO USE
-#   1. Place this file inside your git repository (with a remote configured).
-#   2. Run:  bash makeGithubgreen.sh
-#   3. Push: git push origin ${shEsc(cfg.branch)}
-#
-# WHY SQUARES TURN GREEN ON GITHUB
-#   * Commit email must be one of the emails on your GitHub account.
-#   * Commits must reach the default branch and be pushed.
-#   * Repo public (or private contributions enabled in settings).
-#
-# REQUIREMENTS
-#   * GNU date (Linux, WSL, Git Bash on Windows).
-#     macOS: brew install coreutils, then replace "date" with "gdate".
 
-set -e
+START_DATE = ${pyStr(cfg.start)}        # --start   YYYY-MM-DD
+END_DATE = ${pyStr(cfg.end)}          # --end     YYYY-MM-DD
+DAYS = ${pyStr(days)}     # --days    e.g. "mon,wed,fri" or "random"
+DAYS_PER_WEEK = ${cfg.perWeek}                # how many weekdays get commits when DAYS is "random"
+COMMITS = ${pyStr(commits)}                    # --commits e.g. "3" or a random range like "1-5"
+BRANCH = ${pyStr(cfg.branch)}                  # --branch
+AUTO_PUSH = ${pyBool(cfg.autoPush)}                # --push
+GIT_NAME = ${pyStr(cfg.userName)}                    # --name    (empty = keep current git config)
+GIT_EMAIL = ${pyStr(cfg.userEmail)}                   # --email   (must be an email on your GitHub account)
+MESSAGES_FILE = ""               # --messages path to a .txt file, one message per line
+LOG_FILE = ${pyStr(cfg.logFile)}    # file that gets a new line for every commit
+RANDOM_MESSAGES = ${pyBool(cfg.randomMsgs)}           # False -> "chore(<date>): update <LOG_FILE> (entry #n)"
+INTERACTIVE_IF_NO_ARGS = False   # True -> prompt for settings when run without any flags
 
-# ------------------------- configuration -------------------------
+# Message pool (used when no --messages file is given)
+MESSAGES = [
+${pool}
+]
 
-LOGFILE="${shEsc(cfg.logFile)}"
-START_DATE="${cfg.start}"
-END_DATE="${cfg.end}"
-BRANCH="${shEsc(cfg.branch)}"
-
-# How many days per week should get commits (1..7)
-COMMITS_PER_WEEK=${cfg.perWeek}
-
-# true  -> shuffle WHICH weekdays get commits, every week
-# false -> always commit on FIXED_DAYS (0=Sun 1=Mon 2=Tue ... 6=Sat)
-RANDOM_DAYS=${cfg.randomDays}
-FIXED_DAYS="${fixedDays}"
-
-# true -> every chosen day gets a random 1..MAX_COMMITS_PER_DAY commits
-RANDOM_COMMITS_PER_DAY=${cfg.randomCommits}
-MAX_COMMITS_PER_DAY=${cfg.maxPerDay}
-
-# true -> pick a random commit message from MSG_POOL below
-RANDOM_MESSAGES=${cfg.randomMsgs}
-
-# Optional repo-local identity for these commits (empty = keep current config)
-GIT_USER_NAME="${shEsc(cfg.userName)}"
-GIT_USER_EMAIL="${shEsc(cfg.userEmail)}"
-
-# true -> automatically run "git push origin BRANCH" when finished
-AUTO_PUSH=${cfg.autoPush}
-
-# Commit message pool, one message per line (used when RANDOM_MESSAGES=true)
-MSG_POOL="${pool}"
-
-# --------------------------- helpers -----------------------------
-
-pick_msg() {
-  if [ "$RANDOM_MESSAGES" != "true" ]; then
-    printf '%s\n' "chore($COMMIT_DATE): update $LOGFILE (entry #$DAY_NUMBER)"
-    return
-  fi
-  total=0
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    total=$((total + 1))
-  done <<POOL_EOF
-$MSG_POOL
-POOL_EOF
-  if [ "$total" -eq 0 ]; then
-    printf '%s\n' "chore($COMMIT_DATE): update $LOGFILE (entry #$DAY_NUMBER)"
-    return
-  fi
-  wanted=$(( (RANDOM % total) + 1 ))
-  idx=0
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    idx=$((idx + 1))
-    if [ "$idx" -eq "$wanted" ]; then
-      printf '%s\n' "$line"
-      return
-    fi
-  done <<POOL_EOF
-$MSG_POOL
-POOL_EOF
-}
-
-select_week_days() {
-  if [ "$RANDOM_DAYS" = "true" ]; then
-    SELECTED_DAYS=""
-    while [ "$(set -- $SELECTED_DAYS; echo $#)" -lt "$COMMITS_PER_WEEK" ]; do
-      d=$((RANDOM % 7))
-      case " $SELECTED_DAYS " in
-        *" $d "*) ;;
-        *) SELECTED_DAYS="$SELECTED_DAYS $d" ;;
-      esac
-    done
-  else
-    SELECTED_DAYS="$FIXED_DAYS"
-  fi
-}
-
-# ----------------------------- go --------------------------------
-
-touch "$LOGFILE"
-
-if [ -n "$GIT_USER_NAME" ]; then
-  git config user.name "$GIT_USER_NAME"
-fi
-if [ -n "$GIT_USER_EMAIL" ]; then
-  git config user.email "$GIT_USER_EMAIL"
-fi
-
-CURRENT_WEEK=""
-DAY_NUMBER=0
-TOTAL_COMMITS=0
-ACTIVE_DAYS=0
-
-current_date="$START_DATE"
-end_epoch=$(date -d "$END_DATE" +%s)
-
-while [ "$(date -d "$current_date" +%s)" -le "$end_epoch" ]; do
-  dow=$(date -d "$current_date" +%w)
-  week=$(date -d "$current_date" +%G-%V)
-
-  if [ "$week" != "$CURRENT_WEEK" ]; then
-    CURRENT_WEEK="$week"
-    select_week_days
-  fi
-
-  case " $SELECTED_DAYS " in
-    *" $dow "*)
-      commits_today=1
-      if [ "$RANDOM_COMMITS_PER_DAY" = "true" ] && [ "$MAX_COMMITS_PER_DAY" -gt 1 ]; then
-        commits_today=$(( (RANDOM % MAX_COMMITS_PER_DAY) + 1 ))
-      fi
-
-      ACTIVE_DAYS=$((ACTIVE_DAYS + 1))
-      i=1
-      while [ "$i" -le "$commits_today" ]; do
-        DAY_NUMBER=$((DAY_NUMBER + 1))
-        TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
-        COMMIT_DATE="$current_date"
-        msg="$(pick_msg)"
-
-        echo "[$COMMIT_DATE] entry #$DAY_NUMBER - $msg" >> "$LOGFILE"
-        git add "$LOGFILE"
-
-        GIT_AUTHOR_DATE="$COMMIT_DATE 12:00:00" \\
-        GIT_COMMITTER_DATE="$COMMIT_DATE 12:00:00" \\
-        git commit -m "$msg" --quiet
-
-        printf '  ok  %s  #%s  "%s"\\n' "$COMMIT_DATE" "$DAY_NUMBER" "$msg"
-        i=$((i + 1))
-      done
-      ;;
-  esac
-
-  current_date=$(date -I -d "$current_date + 1 day")
-done
-
-echo ""
-echo "Done. $TOTAL_COMMITS backdated commit(s) created across $ACTIVE_DAYS active day(s)."
-echo "Squares turn green after pushing."
-if [ "$AUTO_PUSH" = "true" ]; then
-  git push origin "$BRANCH"
-else
-  echo "Push now with:"
-  echo "  git push origin $BRANCH"
-fi
-`;
+` + PY_BODY;
 }
 
 function highlight(src) {
   const esc = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  let inDoc = false;
   return esc.split('\n').map(line => {
+    const quotes = (line.match(/"""/g) || []).length;
+    if (inDoc || quotes === 1) {
+      if (quotes % 2 === 1) inDoc = !inDoc;
+      return '<span class="tk-s">' + line + '</span>';
+    }
     if (/^\s*#/.test(line)) return '<span class="tk-c">' + line + '</span>';
     const strs = [];
     let t = line.replace(/("[^"]*"|'[^']*')/g, m => {
       strs.push('<span class="tk-s">' + m + '</span>');
       return '\x00' + (strs.length - 1) + '\x00';
     });
-    t = t.replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, m => '\x01V' + m + '\x02');
-    t = t.replace(/\b(if|then|elif|else|fi|for|while|do|done|case|esac|function|return|local|set|echo|printf|true|false)\b/g,
+    const hash = t.indexOf('#');
+    let tail = '';
+    if (hash !== -1) {
+      tail = '<span class="tk-c">' + t.slice(hash) + '</span>';
+      t = t.slice(0, hash);
+    }
+    t = t.replace(/\b[A-Z][A-Z0-9_]{2,}\b/g, m => '\x01V' + m + '\x02');
+    t = t.replace(/\b(def|class|return|if|elif|else|for|while|in|not|and|or|is|import|from|try|except|raise|with|as|pass|lambda|True|False|None)\b/g,
       '<span class="tk-k">$1</span>');
     t = t.replace(/\x01V/g, '<span class="tk-v">').replace(/\x02/g, '</span>');
+    t += tail;
     t = t.replace(/\x00(\d+)\x00/g, (m, i) => strs[+i]);
     return t;
   }).join('\n');
@@ -414,7 +611,9 @@ function updateFreqLabel(cfg) {
 function update() {
   const cfg = readConfig();
   updateFreqLabel(cfg);
-  $('maxPerDayWrap').classList.toggle('muted', !cfg.randomCommits);
+  $('minMaxWrap').hidden = !cfg.randomCommits;
+  $('dayChips').classList.toggle('disabled', cfg.randomDays);
+  $('msgPool').classList.toggle('muted', !cfg.randomMsgs);
   const stats = renderPreview(cfg);
   if (configValid(cfg)) {
     state.script = generateScript(cfg, stats);
@@ -462,37 +661,98 @@ function fallbackCopy(text) {
   return ok;
 }
 
+// The <code> block is contenteditable, so copy/download whatever the user sees.
+function currentScript() {
+  if (!state.script) return '';
+  return $('scriptCode').innerText || state.script;
+}
+
 function copyScript() {
-  if (!state.script) return;
+  const text = currentScript();
+  if (!text) return;
   const btn = $('copyBtn');
   const feedback = ok => {
     btn.textContent = ok ? 'Copied!' : 'Press Ctrl+C';
     setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
   };
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(state.script)
+    navigator.clipboard.writeText(text)
       .then(() => feedback(true))
-      .catch(() => feedback(fallbackCopy(state.script)));
+      .catch(() => feedback(fallbackCopy(text)));
   } else {
-    feedback(fallbackCopy(state.script));
+    feedback(fallbackCopy(text));
   }
 }
 
 function downloadScript() {
-  if (!state.script) return;
-  const blob = new Blob([state.script], { type: 'text/x-shellscript' });
+  const text = currentScript();
+  if (!text) return;
+  const blob = new Blob([text], { type: 'text/x-python' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'makeGithubgreen.sh';
+  a.download = 'makeGithubgreen.py';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
+function flashLabel(btn, text) {
+  const original = btn.dataset.label || btn.textContent;
+  btn.dataset.label = original;
+  btn.textContent = text;
+  setTimeout(() => { btn.textContent = original; }, 1500);
+}
+
+function savePreset() {
+  const fields = {};
+  PRESET_FIELDS.forEach(id => {
+    const el = $(id);
+    fields[id] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  const preset = {
+    fields: fields,
+    weekdays: Array.from(document.querySelectorAll('#dayChips .chip.on'))
+      .map(c => parseInt(c.dataset.dow, 10))
+  };
+  let ok = true;
+  try {
+    localStorage.setItem(PRESET_KEY, JSON.stringify(preset));
+  } catch (e) {
+    ok = false;
+  }
+  flashLabel($('savePresetBtn'), ok ? 'Saved!' : 'Save failed');
+}
+
+function loadPreset() {
+  let preset = null;
+  try {
+    preset = JSON.parse(localStorage.getItem(PRESET_KEY) || 'null');
+  } catch (e) {
+    preset = null;
+  }
+  if (!preset || !preset.fields) {
+    flashLabel($('loadPresetBtn'), 'No preset saved');
+    return;
+  }
+  PRESET_FIELDS.forEach(id => {
+    if (!(id in preset.fields)) return;
+    const el = $(id);
+    if (el.type === 'checkbox') el.checked = !!preset.fields[id];
+    else el.value = preset.fields[id];
+  });
+  if (Array.isArray(preset.weekdays) && preset.weekdays.length) {
+    document.querySelectorAll('#dayChips .chip').forEach(c => {
+      c.classList.toggle('on', preset.weekdays.indexOf(parseInt(c.dataset.dow, 10)) !== -1);
+    });
+  }
+  update();
+  flashLabel($('loadPresetBtn'), 'Loaded!');
+}
+
 function init() {
   const inputs = [
-    'startDate', 'endDate', 'randomDays', 'randomCount', 'maxPerDay',
+    'startDate', 'endDate', 'randomDays', 'randomCount', 'minPerDay', 'maxPerDay',
     'randomMsgs', 'msgPool', 'logFile', 'branch', 'userName', 'userEmail', 'autoPush'
   ];
   inputs.forEach(id => {
@@ -506,14 +766,6 @@ function init() {
   });
 
   $('dayChips').addEventListener('click', onChipClick);
-
-  $('randomDays').addEventListener('change', () => {
-    $('dayChips').classList.toggle('disabled', $('randomDays').checked);
-  });
-
-  $('randomMsgs').addEventListener('change', () => {
-    $('msgPool').classList.toggle('muted', !$('randomMsgs').checked);
-  });
 
   $('generateBtn').addEventListener('click', () => {
     update();
@@ -531,9 +783,10 @@ function init() {
 
   $('copyBtn').addEventListener('click', copyScript);
   $('downloadBtn').addEventListener('click', downloadScript);
+  $('savePresetBtn').addEventListener('click', savePreset);
+  $('loadPresetBtn').addEventListener('click', loadPreset);
 
   $('msgPool').value = DEFAULT_MSGS.join('\n');
-  $('msgPool').classList.add('muted');
 
   update();
 }

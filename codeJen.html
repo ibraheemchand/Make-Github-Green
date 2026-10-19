@@ -62,13 +62,10 @@
           <span class="track"></span>
           <span class="lbl">Random number of commits per active day</span>
         </label>
-        <span class="mini-note" id="maxPerDayWrap">max
-          <select id="maxPerDay">
-            <option value="2">2</option>
-            <option value="3" selected>3</option>
-            <option value="4">4</option>
-            <option value="5">5</option>
-          </select>
+        <span class="mini-note" id="minMaxWrap" hidden>min
+          <input type="number" id="minPerDay" min="1" max="50" value="1" aria-label="Minimum commits per day">
+          max
+          <input type="number" id="maxPerDay" min="1" max="50" value="5" aria-label="Maximum commits per day">
           / day
         </span>
       </div>
@@ -108,6 +105,10 @@
     </div>
 
     <button type="button" id="generateBtn" class="btn primary big">Generate script</button>
+    <div class="preset-row">
+      <button type="button" id="savePresetBtn" class="btn ghost">Save Preset</button>
+      <button type="button" id="loadPresetBtn" class="btn ghost">Load Preset</button>
+    </div>
 
   </section>
 
@@ -139,14 +140,14 @@
 
     <div class="card" id="scriptCard">
       <div class="card-head">
-        <h2>Your script — <code>makeGithubgreen.sh</code></h2>
+        <h2>Your script — <code>makeGithubgreen.py</code></h2>
         <div class="btn-group">
           <button type="button" id="copyBtn" class="btn ghost small">Copy</button>
           <button type="button" id="downloadBtn" class="btn ghost small">Download</button>
         </div>
       </div>
-      <pre id="scriptOut"><code id="scriptCode"></code></pre>
-      <p class="hint">Save it inside your repository, then run: <code>bash makeGithubgreen.sh</code> — afterwards <code>git push origin main</code> (or enable auto-push above).</p>
+      <pre id="scriptOut"><code id="scriptCode" contenteditable="true" spellcheck="false"></code></pre>
+      <p class="hint">Save it inside your repository, then run: <code>python makeGithubgreen.py</code> — afterwards <code>git push origin main</code> (or enable auto-push above).</p>
     </div>
 
     <div class="card notes">
@@ -156,7 +157,7 @@
         <li>The commit email must be added to your GitHub account: Settings → Emails.</li>
         <li>Commits must land on the <strong>default branch</strong> and must be <strong>pushed</strong> — local commits alone don't count.</li>
         <li>The repo must be public, or enable “include private contributions” on your profile.</li>
-        <li>The script needs GNU <code>date</code> (Linux, WSL, Git Bash on Windows). On macOS: <code>brew install coreutils</code> and use <code>gdate</code>.</li>
+        <li>Requires Python 3.6+ — already installed on most systems. Windows users: download from <a href="https://www.python.org/downloads/" target="_blank" rel="noopener">python.org</a> if needed.</li>
       </ul>
     </div>
 
