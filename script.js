@@ -159,10 +159,9 @@ def ensure_branch(branch):
     print(f"Switched to branch '{branch}'.")
 
 
-def make_commit(day, index, message, log_file):
-    stamp = datetime.datetime.combine(
-        day, datetime.time(random.randint(9, 20), random.randint(0, 59), random.randint(0, 59))
-    ).strftime("%Y-%m-%dT%H:%M:%S")
+def make_commit(when, index, message, log_file):
+    day = when.date()
+    stamp = when.strftime("%Y-%m-%dT%H:%M:%S")
     with open(log_file, "a", encoding="utf-8") as fh:
         fh.write(f"[{day.isoformat()}] entry #{index} - {message}\n")
     git("add", "--", log_file)
@@ -173,7 +172,7 @@ def make_commit(day, index, message, log_file):
 # --------------------------- planning --------------------------
 
 def build_plan(start, end, fixed_days, per_week, low, high):
-    """Return one date per commit, in chronological order."""
+    """Return one datetime per commit, in chronological order (09:00-20:59 each day)."""
     plan = []
     week = None
     selected = set()
@@ -185,7 +184,9 @@ def build_plan(start, end, fixed_days, per_week, low, high):
             week = iso_week
             selected = fixed_days if fixed_days is not None else set(random.sample(range(7), per_week))
         if day.weekday() in selected:
-            plan.extend([day] * random.randint(low, high))
+            seconds = sorted(random.sample(range(9 * 3600, 21 * 3600), random.randint(low, high)))
+            midnight = datetime.datetime.combine(day, datetime.time())
+            plan.extend(midnight + datetime.timedelta(seconds=sec) for sec in seconds)
         day += one_day
     return plan
 
@@ -291,15 +292,15 @@ def main(argv=None):
     print(f"Creating {total} backdated commit(s) from {start} to {end} on '{args.branch}'...")
     chars = bar_chars()
     print_progress(0, total, chars)
-    for index, day in enumerate(plan, 1):
+    for index, when in enumerate(plan, 1):
         if messages:
             message = random.choice(messages)
         else:
-            message = f"chore({day.isoformat()}): update {LOG_FILE} (entry #{index})"
-        make_commit(day, index, message, LOG_FILE)
+            message = f"chore({when.date().isoformat()}): update {LOG_FILE} (entry #{index})"
+        make_commit(when, index, message, LOG_FILE)
         print_progress(index, total, chars)
     print()
-    print(f"Done. {total} commit(s) across {len(set(plan))} active day(s).")
+    print(f"Done. {total} commit(s) across {len(set(w.date() for w in plan))} active day(s).")
 
     if args.push:
         print(f"Pushing to origin/{args.branch}...")
