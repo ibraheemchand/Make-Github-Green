@@ -30,7 +30,7 @@ Works on **Windows, macOS and Linux**. Needs only **Python 3.6+** and **git** �
 
 ```mermaid
 flowchart LR
-    A["codeJen.html<br/>pick dates, days,<br/>commits per day"] --> B["Download<br/>green.py"]
+    A["generator.html<br/>pick dates, days,<br/>commits per day"] --> B["Download<br/>green.py"]
     B --> C["python green.py<br/>(inside your repo)"]
     C --> D["Backdated commits<br/>in activity_log.txt"]
     D --> E["git push"]
@@ -43,7 +43,7 @@ square by the commit date, so once pushed, those past days light up.
 
 | File | What it is |
 |------|------------|
-| `codeJen.html` | The generator page — open it in any browser |
+| `generator.html` | The generator page — open it in any browser |
 | `script.js` / `style.css` | Logic and styling for the generator page |
 | `green.py` | The cross-platform commit script (also what the page downloads) |
 | `messages.txt` | 15 example commit messages for `--messages` |
@@ -164,7 +164,7 @@ cd <your-repo>
 
 ## Quick start (web generator)
 
-1. **Open `codeJen.html`** in your browser (double-click the file, or use the hosted page).
+1. **Open `generator.html`** in your browser (double-click the file, or use the hosted page).
 2. **Set it up:**
    - **Date range** — start and end date.
    - **How many times per week** — slider or click the weekday chips. Turn on *Random days* to shuffle which days get commits each week.
