@@ -485,6 +485,9 @@ function renderPreview(cfg) {
   starts.forEach((st, idx) => {
     const next = idx + 1 < starts.length ? starts[idx + 1] : monthByCol.length;
     const span = Math.max(1, next - st);
+    // A one-week month followed by another label has no room for its text
+    // (e.g. a range starting in the last days of Dec) — skip it like GitHub does.
+    if (span < 2 && next < monthByCol.length) return;
     const s = document.createElement('span');
     s.textContent = new Date(2026, monthByCol[st], 1)
       .toLocaleString('en-US', { month: 'short' });
