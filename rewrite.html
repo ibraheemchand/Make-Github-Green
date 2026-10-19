@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="makeGithubgreen — rewrite the dates of your existing commits to fill your GitHub contribution graph.">
+<title>Rewrite History — makeGithubgreen</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-head">
+  <div class="wrap">
+    <div class="head-row">
+      <div class="logo">makeGithub<em>green</em></div>
+      <nav class="site-nav" aria-label="Pages">
+        <a href="generator.html">Generator</a>
+        <a href="rewrite.html" class="active" aria-current="page">Rewrite History</a>
+      </nav>
+    </div>
+    <p class="tagline">Already have commits? Redistribute their dates across any range — evenly, randomly or weighted toward weekdays. Download the script, run it in your repo, force push. Green squares.</p>
+  </div>
+</header>
+
+<main class="wrap layout">
+
+  <section class="col-options">
+
+    <div class="card">
+      <h2><i>1</i> Date range</h2>
+      <div class="row two">
+        <label class="field">Start date
+          <input type="date" id="startDate" value="2026-01-01">
+        </label>
+        <label class="field">End date
+          <input type="date" id="endDate">
+        </label>
+      </div>
+      <p class="hint error" id="dateError"></p>
+    </div>
+
+    <div class="card">
+      <h2><i>2</i> Spread pattern</h2>
+      <div class="seg" id="patternSeg" role="group" aria-label="Spread pattern">
+        <button type="button" class="chip on" data-pattern="even" aria-pressed="true">Even</button>
+        <button type="button" class="chip" data-pattern="random" aria-pressed="false">Random</button>
+        <button type="button" class="chip" data-pattern="weighted" aria-pressed="false">Weighted</button>
+      </div>
+      <div id="dayChipsWrap" hidden>
+        <p class="hint seg-hint">80% of commits land on the selected days, 20% on the rest.</p>
+        <div class="chips" id="dayChips">
+          <button type="button" class="chip on" data-dow="1">Mon</button>
+          <button type="button" class="chip on" data-dow="2">Tue</button>
+          <button type="button" class="chip on" data-dow="3">Wed</button>
+          <button type="button" class="chip on" data-dow="4">Thu</button>
+          <button type="button" class="chip on" data-dow="5">Fri</button>
+          <button type="button" class="chip" data-dow="6">Sat</button>
+          <button type="button" class="chip" data-dow="0">Sun</button>
+        </div>
+      </div>
+      <p class="hint">Your existing commits will be redistributed across this range.</p>
+    </div>
+
+    <div class="card">
+      <h2><i>3</i> Time of day</h2>
+      <label class="switch">
+        <input type="checkbox" id="randomTimes" checked>
+        <span class="track"></span>
+        <span class="lbl">Randomize commit times (between 09:00 and 18:00)</span>
+      </label>
+      <label class="field" id="fixedTimeWrap" hidden>Commit time
+        <input type="time" id="fixedTime" value="12:00" step="1">
+      </label>
+    </div>
+
+    <div class="card">
+      <h2><i>4</i> Repo details</h2>
+      <label class="field">Branch
+        <input type="text" id="branch" value="main">
+      </label>
+      <label class="switch">
+        <input type="checkbox" id="forcePush" checked>
+        <span class="track"></span>
+        <span class="lbl">Force push when done</span>
+      </label>
+      <div class="row two">
+        <label class="field">Git user.name <small>(optional)</small>
+          <input type="text" id="userName" placeholder="keep existing" autocomplete="off">
+        </label>
+        <label class="field">Git user.email <small>(optional)</small>
+          <input type="text" id="userEmail" placeholder="must exist on your GitHub account" autocomplete="off">
+        </label>
+      </div>
+      <p class="warn">⚠️ This rewrites git history. Anyone sharing this repo must run <code>git pull --rebase</code> or re-clone after you force push.</p>
+    </div>
+
+    <button type="button" id="generateBtn" class="btn primary big">Generate script</button>
+
+  </section>
+
+  <section class="col-output">
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Preview</h2>
+        <button type="button" id="rerollBtn" class="btn ghost small" title="Reshuffle the random pattern">Re-shuffle</button>
+      </div>
+      <label class="field inline-field">Commits in this repo
+        <input type="number" id="commitCount" min="1" max="5000" value="10">
+        <small>Run <code>git rev-list --count HEAD</code> to find out — the browser can't read your repo.</small>
+      </label>
+      <p class="found-line" id="foundLine"></p>
+      <div class="graph">
+        <div class="graph-months" id="graphMonths"></div>
+        <div class="graph-row">
+          <div class="graph-days">
+            <span style="grid-row:1">Sun</span>
+            <span style="grid-row:2">Mon</span>
+            <span style="grid-row:3">Tue</span>
+            <span style="grid-row:4">Wed</span>
+            <span style="grid-row:5">Thu</span>
+            <span style="grid-row:6">Fri</span>
+            <span style="grid-row:7">Sat</span>
+          </div>
+          <div class="graph-grid" id="graphGrid"></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span>Less</span>
+        <i class="lv0"></i><i class="lv1"></i><i class="lv2"></i><i class="lv3"></i><i class="lv4"></i>
+        <span>More</span>
+      </div>
+      <p class="stats" id="stats"></p>
+    </div>
+
+    <div class="card" id="scriptCard">
+      <div class="card-head">
+        <h2>Your script — <code>rewrite_history.py</code></h2>
+        <div class="btn-group">
+          <button type="button" id="copyBtn" class="btn ghost small">Copy</button>
+          <button type="button" id="downloadBtn" class="btn ghost small">Download</button>
+        </div>
+      </div>
+      <pre id="scriptOut"><code id="scriptCode"></code></pre>
+      <p class="hint">Run inside your repo: <code>python rewrite_history.py</code></p>
+    </div>
+
+    <div class="card notes">
+      <h2>How to use</h2>
+      <ul>
+        <li><strong>Step 1:</strong> Download <code>rewrite_history.py</code> into your repo folder.</li>
+        <li><strong>Step 2:</strong> Run: <code>python rewrite_history.py</code> (<code>python3</code> on some Mac/Linux systems).</li>
+        <li><strong>Step 3:</strong> The script rewrites all commit dates, then force pushes.</li>
+        <li><strong>Step 4:</strong> Check your GitHub profile — squares update within minutes.</li>
+        <li>Requires Python 3.6+ and git installed. Commit or stash your changes before running.</li>
+        <li>Changed your mind before pushing? <code>git reset --hard refs/original/refs/heads/main</code> restores the old history.</li>
+      </ul>
+    </div>
+
+  </section>
+
+</main>
+
+<footer class="wrap site-foot">
+  makeGithubgreen · scripts run 100% locally in your terminal · rewritten history is visible to anyone reading the repo, so use it sensibly.
+</footer>
+
+<script src="rewrite_script.js"></script>
+</body>
+</html>

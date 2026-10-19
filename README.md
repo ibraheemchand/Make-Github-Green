@@ -20,6 +20,7 @@ Works on **Windows, macOS and Linux**. Needs only **Python 3.6+** and **git** �
 - [Using green.py from the command line](#using-greenpy-from-the-command-line)
 - [All options](#all-options)
 - [Custom commit messages](#custom-commit-messages)
+- [Rewrite History (existing commits)](#rewrite-history-existing-commits)
 - [Make sure the squares actually turn green](#make-sure-the-squares-actually-turn-green)
 - [Does this change my git history?](#does-this-change-my-git-history)
 - [Troubleshooting](#troubleshooting)
@@ -47,6 +48,7 @@ square by the commit date, so once pushed, those past days light up.
 | `script.js` / `style.css` | Logic and styling for the generator page |
 | `green.py` | The cross-platform commit script (also what the page downloads) |
 | `messages.txt` | 15 example commit messages for `--messages` |
+| `rewrite.html` / `rewrite_script.js` | Rewrite History page — makes `rewrite_history.py` |
 | `index.html` | Landing page |
 
 ---
@@ -327,6 +329,33 @@ python green.py --messages messages.txt
 ```
 
 On the web page, edit the *Message pool* box instead; those messages get baked into the downloaded `green.py`.
+
+---
+
+## Rewrite History (existing commits)
+
+Already have real commits? `rewrite.html` spreads their dates across a range instead of adding new ones.
+
+1. Open `rewrite.html` (or click **Rewrite History** in the header).
+2. Pick the date range and a pattern:
+   - **Even** — commits spread evenly across the range
+   - **Random** — commits on random dates in the range
+   - **Weighted** — 80% on the weekdays you select, 20% on the rest
+3. Choose random times (09:00–18:00) or one fixed time, the branch, and whether to force push.
+4. Enter how many commits your repo has (`git rev-list --count HEAD`) to see an accurate preview.
+5. Download `rewrite_history.py` into your repo, commit or stash any changes, then run:
+
+   ```bash
+   python rewrite_history.py          # asks before changing anything
+   python rewrite_history.py --yes    # no question
+   ```
+
+It reads every commit on the branch, writes a date map, rewrites the dates in one
+`git filter-branch` pass with a progress bar, then runs `git push --force origin <branch>`.
+
+> ⚠️ **This rewrites git history** — every commit gets a new hash. Anyone sharing the repo must run
+> `git pull --rebase` or re-clone after the force push. Undo before pushing with
+> `git reset --hard refs/original/refs/heads/main`.
 
 ---
 
